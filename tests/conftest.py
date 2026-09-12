@@ -35,6 +35,16 @@ class ServerLog:
             return self.hits[path]
 
 
+# 短链展开用的跳转表，Location 故意写成相对路径以覆盖 URL 拼接
+REDIRECTS = {
+    "/short": "/video/BV1wUYQ6ME4Q/?p=1&share_source=copy",
+    "/hop1": "/hop2",
+    "/hop2": "/video/BV1kktD69EaX/",
+    "/loop": "/loop",
+    "/nobv": "/bangumi/play/ep123",
+}
+
+
 @pytest.fixture
 def payload() -> bytes:
     return make_payload(5000)
@@ -48,6 +58,7 @@ def server(payload):
     /norange   忽略 Range，总是整体返回
     /broken    总是 500
     /flaky     首次请求断在中途，之后正常
+    其余路径   按 REDIRECTS 表跳转，或直接返回内容
     """
     log = ServerLog()
 
@@ -75,6 +86,10 @@ def server(payload):
 
             if self.path == "/norange":
                 self._send(payload)
+                return
+
+            if self.path in REDIRECTS:
+                self._send(b"", 302, {"Location": REDIRECTS[self.path]})
                 return
 
             start, end = 0, len(payload) - 1

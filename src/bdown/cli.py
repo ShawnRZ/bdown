@@ -26,7 +26,6 @@ from .api import (
     Stream,
     VideoInfo,
     load_cookie,
-    parse_target,
 )
 from .download import DownloadError, download
 
@@ -51,7 +50,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("targets", nargs="+", metavar="BV号", help="BV 号、av 号或视频链接")
+    parser.add_argument(
+        "targets", nargs="+", metavar="BV号",
+        help="BV 号、av 号、视频链接或 b23.tv 短链（也可直接粘贴 App 分享的整段文字）",
+    )
     parser.add_argument(
         "-o", "--output", type=Path, default=Path.cwd(), metavar="目录", help="输出目录，默认当前目录"
     )
@@ -65,7 +67,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--codec", choices=("avc", "hevc", "av1"), default="avc",
         help="视频编码，默认 avc（兼容性最好），hevc/av1 同画质体积更小",
     )
-    parser.add_argument("-p", "--pages", metavar="范围", help="分 P 选择，如 1,3-5；默认全部")
+    pages_group = parser.add_mutually_exclusive_group()
+    pages_group.add_argument(
+        "-p", "--pages", metavar="范围", help="分 P 选择，如 1,3-5；默认全部"
+    )
+    pages_group.add_argument(
+        "--all-pages", action="store_true",
+        help="下载全部分 P，忽略链接里的 p= 指定",
+    )
     parser.add_argument("-j", "--threads", type=int, default=8, metavar="并发数", help="分块并发数，默认 8")
     parser.add_argument("--list", action="store_true", help="列出分 P 与可用清晰度后退出")
     parser.add_argument("--audio-only", action="store_true", help="只下音频，输出 m4a")
@@ -102,6 +111,34 @@ def parse_pages(spec: str | None, total: int) -> list[int]:
     if not valid:
         raise ValueError(f"分 P 选择 {spec!r} 超出范围（共 {total} 个分 P）")
     return valid
+
+
+def select_pages(
+    total: int, explicit: str | None, link_page: int | None, all_pages: bool
+) -> tuple[list[int], str | None]:
+    """决定下载哪些分 P，返回 (序号列表, 需要告知用户的话)。
+
+    优先级：命令行 -p > 链接里的 p= > 全部。
+    """
+    if explicit:
+        return parse_pages(explicit, total), None
+
+    if link_page and not all_pages:
+        if link_page > total:
+            # 链接过期或指向别的稿件时不要硬失败，退回下载全部
+            return list(range(1, total + 1)), (
+                f"[yellow]提示[/yellow] 链接里的 p={link_page} 超出范围"
+                f"（共 {total} 个分 P），改为下载全部"
+            )
+        note = None
+        if total > 1:
+            note = (
+                f"[dim]链接指定了 P{link_page}，本次只下这一个分 P；"
+                f"要全部请加 --all-pages[/dim]"
+            )
+        return [link_page], note
+
+    return list(range(1, total + 1)), None
 
 
 def human(size: int) -> str:
@@ -278,8 +315,11 @@ def _progress() -> Progress:
 
 
 def handle_target(client: BilibiliClient, args: argparse.Namespace, target: str) -> None:
-    bvid, aid = parse_target(target)
-    info = client.video_info(bvid=bvid, aid=aid)
+    def report_expand(short: str, final: str) -> None:
+        console.print(f"短链 {short} → {final.split('?')[0]}", soft_wrap=True)
+
+    resolved = client.resolve_target(target, on_expand=report_expand)
+    info = client.video_info(bvid=resolved.bvid, aid=resolved.aid)
 
     if args.list:
         data = client.playurl(info.bvid, info.pages[0].cid, qn=args.quality or 127)
@@ -287,7 +327,9 @@ def handle_target(client: BilibiliClient, args: argparse.Namespace, target: str)
         show_info(info, videos, audios)
         return
 
-    indexes = parse_pages(args.pages, len(info.pages))
+    indexes, note = select_pages(
+        len(info.pages), args.pages, resolved.page, args.all_pages
+    )
     multi = len(info.pages) > 1
     out_dir = args.output / merge.safe_name(info.title, info.bvid) if multi else args.output
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -295,6 +337,8 @@ def handle_target(client: BilibiliClient, args: argparse.Namespace, target: str)
     console.print(f"[bold]{info.title}[/bold] — {info.owner} ({info.bvid})")
     if multi:
         console.print(f"共 {len(info.pages)} 个分 P，本次下载 {len(indexes)} 个 → {out_dir}")
+    if note:
+        console.print(note)
 
     failures = 0
     for index in indexes:

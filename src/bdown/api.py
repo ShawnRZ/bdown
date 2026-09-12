@@ -6,6 +6,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 import httpx
 
@@ -69,6 +70,15 @@ class BilibiliError(RuntimeError):
 
 
 @dataclass
+class Target:
+    """一次解析的结果：定位到哪个稿件，以及链接是否指定了分 P。"""
+
+    bvid: str | None = None
+    aid: int | None = None
+    page: int | None = None
+
+
+@dataclass
 class Page:
     """视频的一个分 P。"""
 
@@ -111,16 +121,42 @@ class Stream:
 
 
 _BV_RE = re.compile(r"BV[0-9A-Za-z]{10}")
-_AV_RE = re.compile(r"av(\d+)", re.I)
+# 前面不能紧跟字母数字，免得把短链里的随机串（如 x1av2bc）误认成 av 号
+_AV_RE = re.compile(r"(?:^|[^0-9A-Za-z])av(\d+)", re.I)
+# b23.tv / bili2233.cn 是官方短链域名，只展开这两个，不跟随任意外部地址
+_SHORT_RE = re.compile(r"(?:https?://)?(?:b23\.tv|bili2233\.cn)/[0-9A-Za-z]+", re.I)
+
+# 只认查询串里的 p=N，避免匹配到标题等无关文本
+_PAGE_RE = re.compile(r"[?&]p=(\d+)")
+
+MAX_REDIRECTS = 5
 
 
 def parse_target(text: str) -> tuple[str | None, int | None]:
-    """从 BV 号、av 号或视频链接里解析出 (bvid, aid)。"""
+    """从 BV 号、av 号或视频链接里解析出 (bvid, aid)。不联网。"""
     if match := _BV_RE.search(text):
         return match.group(0), None
     if match := _AV_RE.search(text):
         return None, int(match.group(1))
     raise ValueError(f"无法从 {text!r} 中识别 BV 号或 av 号")
+
+
+def parse_page(text: str) -> int | None:
+    """取出链接里的 p=N。App 分享多 P 稿件时会用它指明是第几个分 P。"""
+    match = _PAGE_RE.search(text)
+    if not match:
+        return None
+    page = int(match.group(1))
+    return page if page >= 1 else None
+
+
+def find_short_link(text: str) -> str | None:
+    """从一段文本里揪出 b23.tv 短链，兼容 App 分享出来的整段话。"""
+    match = _SHORT_RE.search(text)
+    if not match:
+        return None
+    url = match.group(0)
+    return url if url.lower().startswith("http") else f"https://{url}"
 
 
 def load_cookie(explicit: str | None = None) -> str:
@@ -190,6 +226,57 @@ class BilibiliClient:
     def _signed_get(self, url: str, params: dict) -> dict:
         img_key, sub_key = self.wbi_keys()
         return self._get_json(url, wbi.sign(params, img_key, sub_key))
+
+    def resolve_short_link(self, url: str) -> str:
+        """顺着 302 找到真实地址。
+
+        只读响应头里的 Location，不消费正文，所以不会把整个播放页下下来。
+        """
+        seen: set[str] = set()
+        for _ in range(MAX_REDIRECTS):
+            if url in seen:
+                raise BilibiliError(f"短链跳转成环：{url}")
+            seen.add(url)
+            try:
+                with self.http.stream("GET", url, follow_redirects=False) as resp:
+                    location = resp.headers.get("location")
+            except httpx.HTTPError as exc:
+                raise BilibiliError(f"短链展开失败：{exc}") from exc
+            if not location:
+                return url
+            url = str(httpx.URL(url).join(location))
+            # 地址里一旦出现 BV / av 号就不必再跳，省掉后续请求
+            if _BV_RE.search(url) or _AV_RE.search(url):
+                return url
+        return url
+
+    def resolve_target(
+        self, text: str, on_expand: Callable[[str, str], None] | None = None
+    ) -> Target:
+        """把用户给的字符串解析成 Target，必要时先展开短链。"""
+        try:
+            bvid, aid = parse_target(text)
+        except ValueError:
+            pass
+        else:
+            return Target(bvid, aid, parse_page(text))
+
+        short = find_short_link(text)
+        if short is None:
+            raise ValueError(f"无法从 {text!r} 中识别 BV 号或 av 号")
+
+        final = self.resolve_short_link(short)
+        if on_expand:
+            on_expand(short, final)
+        try:
+            bvid, aid = parse_target(final)
+        except ValueError:
+            raise BilibiliError(
+                f"短链展开后是 {final}，其中没有视频稿件"
+                "（番剧、直播、动态等不在支持范围内）"
+            ) from None
+        # 用户原文里的 p= 优先于展开后地址带的
+        return Target(bvid, aid, parse_page(text) or parse_page(final))
 
     def video_info(self, bvid: str | None = None, aid: int | None = None) -> VideoInfo:
         params = {"bvid": bvid} if bvid else {"aid": aid}

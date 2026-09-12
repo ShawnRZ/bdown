@@ -4,12 +4,12 @@
 
 ## 特性
 
-- 输入 BV 号、av 号或视频链接均可
+- 输入 BV 号、av 号、视频链接或 b23.tv 短链均可，也能直接粘贴 App 分享的整段文字
 - 自动挑选最高可用画质，也可以指定 qn / 编码（avc、hevc、av1）
 - DASH 音视频流分别下载后用 ffmpeg 无损封装成 MP4（不重新编码）
 - 分块并发下载，**支持断点续传**：中断后重跑会接着下，不会从零开始
 - 主地址失败时自动切备用 CDN，单块失败自动重试
-- 多分 P 稿件可按 `1,3-5` 的形式挑选，自动按标题建目录
+- 多分 P 稿件可按 `1,3-5` 的形式挑选，自动按标题建目录；链接里的 `p=N` 会被识别
 - 支持只下音频（`--audio-only`）、无损 / 杜比音轨（`--hires`）
 
 ## 依赖
@@ -44,6 +44,40 @@ bdown BV1kktD69EaX --audio-only         # 只要音频，输出 m4a
 bdown BV1kktD69EaX -j 16                # 提高并发分块数
 bdown BV1aaa BV1bbb                     # 一次下多个
 ```
+
+短链和分享文字都能直接喂给它：
+
+```bash
+bdown https://b23.tv/4lyxfrR
+bdown b23.tv/4lyxfrR                                  # 协议头可省
+bdown "【标题】 https://b23.tv/4lyxfrR 转发自哔哩哔哩，快来看看吧"
+```
+
+展开结果会打出来，便于确认下的是哪个稿件：
+
+```
+短链 https://b23.tv/4lyxfrR → https://www.bilibili.com/video/BV1wUYQ6ME4Q
+```
+
+## 分 P 的选择
+
+多 P 稿件默认下载全部。App 分享出来的链接通常带 `p=N`，指明分享的是第几个分 P，
+bdown 会认这个参数、只下那一个，并在输出里说明：
+
+```bash
+bdown "https://www.bilibili.com/video/BV1JmTE6zEqM/?p=2"
+# 链接指定了 P2，本次只下这一个分 P；要全部请加 --all-pages
+```
+
+优先级是 **命令行 `-p` > 链接里的 `p=` > 全部**：
+
+```bash
+bdown "https://.../BV1JmTE6zEqM/?p=2" --all-pages   # 忽略 p=，下全部
+bdown "https://.../BV1JmTE6zEqM/?p=2" -p 1,3-5      # 按自己的范围来
+```
+
+`p=` 超出该稿件的分 P 数时（链接过期等）不会失败，而是提示一句并改为下载全部。
+`-p` 与 `--all-pages` 不能同时给。
 
 `--list` 会列出该稿件的分 P 和当前账号能拿到的全部流：
 
@@ -98,6 +132,10 @@ bdown BV1kktD69EaX --cookie 'SESSDATA=xxxx'
 图片文件名经固定重排表推导，参数需按键排序并以浏览器 `URLSearchParams` 的规则编码后
 取 MD5。`src/bdown/wbi.py` 实现了这套算法，`tests/wbi_vectors.json` 存了几组从浏览器
 抓包提取的真实签名样本（不含任何凭据）用于锁定行为。
+
+短链展开只读 302 响应头里的 `Location`，不消费正文，所以不会把整个播放页下下来；
+地址里一旦出现 BV / av 号就停止跳转（`b23.tv` 通常一跳即可）。为避免跟随任意外部地址，
+只有 `b23.tv` 和 `bili2233.cn` 这两个官方短链域名会被展开。
 
 下载器把文件切成 4MiB 的块并发抓取，各线程用 `os.pwrite` 写入同一文件的不同偏移，
 进度记录在 `<文件名>.bdown` 里；因为进度总在数据落盘之后才更新，中断后最多重下一小段，

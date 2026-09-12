@@ -2,7 +2,7 @@ import pytest
 
 from bdown import merge
 from bdown.api import parse_target
-from bdown.cli import build_parser, human, parse_pages
+from bdown.cli import build_parser, human, parse_pages, select_pages
 
 
 @pytest.mark.parametrize(
@@ -77,3 +77,44 @@ def test_parser_defaults():
 def test_parser_rejects_unknown_quality():
     with pytest.raises(SystemExit):
         build_parser().parse_args(["BV1", "-q", "999"])
+
+
+# --- 分 P 选择的优先级 ---
+
+
+def test_select_pages_defaults_to_all():
+    assert select_pages(3, None, None, False) == ([1, 2, 3], None)
+
+
+def test_select_pages_honours_link_page():
+    indexes, note = select_pages(5, None, 3, False)
+    assert indexes == [3]
+    assert "P3" in note and "--all-pages" in note
+
+
+def test_select_pages_stays_quiet_on_single_part_video():
+    """只有一个分 P 时，链接带 p=1 是常态，不必提示。"""
+    assert select_pages(1, None, 1, False) == ([1], None)
+
+
+def test_explicit_pages_override_link():
+    assert select_pages(5, "2,4", 3, False) == ([2, 4], None)
+
+
+def test_all_pages_flag_overrides_link():
+    assert select_pages(4, None, 2, True) == ([1, 2, 3, 4], None)
+
+
+def test_link_page_out_of_range_falls_back_to_all():
+    indexes, note = select_pages(2, None, 9, False)
+    assert indexes == [1, 2]
+    assert "超出范围" in note
+
+
+def test_pages_and_all_pages_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["BV1kktD69EaX", "-p", "1", "--all-pages"])
+
+
+def test_all_pages_defaults_false():
+    assert build_parser().parse_args(["BV1kktD69EaX"]).all_pages is False
