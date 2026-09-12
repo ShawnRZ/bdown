@@ -1,0 +1,25 @@
+[project]
+name = "bdown"
+version = "0.1.0"
+description = "下载 bilibili 视频的命令行工具，给出 BV 号即可"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "rich>=15.0.0",
+]
+
+[project.scripts]
+bdown = "bdown.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "bdown"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

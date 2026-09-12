@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# 测试缓存
+.pytest_cache/
+
+# 抓包文件含登录 Cookie 等凭据，不要提交
+*.har
+
+# 下载产物与断点续传中间文件
+*.mp4
+*.m4a
+*.m4s
+*.part
+*.bdown

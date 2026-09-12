@@ -1,0 +1,50 @@
+{
+  "comment": "由浏览器抓包提取的真实签名样本，用于锁定 WBI 算法；不含 Cookie 等凭据。",
+  "img_key": "7cd084941338484aae1ad9425b84077c",
+  "sub_key": "4932caff0ff746eab6f01bf08b70ac45",
+  "vectors": [
+    {
+      "path": "/x/web-interface/view/conclusion/judge",
+      "w_rid": "e1353e21a32f8b2317e8beb22be1ed90",
+      "wts": 1789190636,
+      "params": {
+        "bvid": "BV1aKYE6oExG",
+        "cid": "41789426710",
+        "up_mid": "3546914221983946",
+        "web_location": "333.788"
+      }
+    },
+    {
+      "path": "/x/web-interface/wbi/search/default",
+      "w_rid": "8faf9b45db4df86a3061789325d81f71",
+      "wts": 1789190636,
+      "params": {
+        "web_location": "333.788"
+      }
+    },
+    {
+      "path": "/x/web-show/wbi/res/locs",
+      "w_rid": "6051b7bb6f2f3259b172d28b7d91f8b3",
+      "wts": 1789190636,
+      "params": {
+        "pf": "0",
+        "ids": "2837,2836,2870,2953,2954,2955,2956,5672",
+        "web_location": "333.788"
+      }
+    },
+    {
+      "path": "/x/v2/reply/wbi/main",
+      "w_rid": "0a9a9cdd62851028a59f14563aa21e3d",
+      "wts": 1789190636,
+      "params": {
+        "oid": "117251650948625",
+        "type": "1",
+        "mode": "3",
+        "pagination_str": "{\"offset\":\"\"}",
+        "plat": "1",
+        "seek_rpid": "",
+        "web_location": "1315875"
+      }
+    }
+  ]
+}
