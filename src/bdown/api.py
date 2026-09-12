@@ -14,7 +14,7 @@ import httpx
 from . import wbi
 
 API_NAV = "https://api.bilibili.com/x/web-interface/nav"
-API_VIEW = "https://api.bilibili.com/x/web-interface/view"
+API_VIEW = "https://api.bilibili.com/x/web-interface/wbi/view"
 API_PLAYURL = "https://api.bilibili.com/x/player/wbi/playurl"
 
 USER_AGENT = (
