@@ -126,6 +126,35 @@ bdown BV1kktD69EaX --cookie 'SESSDATA=xxxx'
 | 74 | 720P60 | 125 | HDR |
 | 80 | 1080P | 127 | 8K |
 
+## 在服务器上遇到 412
+
+`HTTP 412` / `code=-412` 是 bilibili 的风控拦截。机房和云服务器的 IP 段被重点盯防，
+所以同一份代码在家里能跑、在服务器上就被拦，这很常见。
+
+bdown 已经内置了几项缓解措施，无需配置：
+
+- 启动时向官方 `finger/spi` 接口申领 `buvid3` / `buvid4` 设备标识（失败则退回首页的
+  `Set-Cookie`），并补上配套的 `b_nut`——缺这些 Cookie 的请求很容易被判为爬虫
+- 请求头对齐 Chrome（`sec-ch-ua`、`Sec-Fetch-*` 等）
+- 被拦截时自动换一组设备标识，按 2s、4s 退避重试
+
+仍然被拦时，按效果排序：
+
+1. **提供登录 Cookie**，见上面「关于清晰度与登录」。带 `SESSDATA` 的请求风控宽松得多，
+   这也是最有效的一招
+2. **放慢节奏**：`-j 2` 降低并发；批量下载时在两次之间留点间隔
+3. **换出口 IP 或走代理**——住宅 IP 基本不会被拦：
+
+   ```bash
+   export HTTPS_PROXY=http://127.0.0.1:7890
+   bdown BV1kktD69EaX
+   ```
+
+4. 等几分钟再试。风控多是临时的
+
+注意 `SESSDATA` 等 Cookie 的作用域被限制在 `bilibili.com`，下载媒体流时不会发给 CDN
+（CDN 靠地址里的签名鉴权，不需要 Cookie）。
+
 ## 实现说明
 
 `playurl` 等接口要求 WBI 签名（`wts` + `w_rid`）：签名密钥由 `nav` 接口下发的两张

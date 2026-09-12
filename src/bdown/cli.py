@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+import httpx
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -347,7 +348,7 @@ def handle_target(client: BilibiliClient, args: argparse.Namespace, target: str)
             console.print(f"[bold cyan]P{page.index}[/bold cyan] {page.title}")
         try:
             download_page(client, args, info, page, out_dir, multi)
-        except (BilibiliError, DownloadError, merge.MergeError) as exc:
+        except (BilibiliError, DownloadError, merge.MergeError, httpx.HTTPError) as exc:
             failures += 1
             err_console.print(f"[red]P{page.index} 失败[/red] {exc}")
     if failures:
@@ -369,6 +370,9 @@ def main(argv: list[str] | None = None) -> int:
     with BilibiliClient(cookie=cookie) as client:
         try:
             client.wbi_keys()  # 顺带拿到登录态
+        except BilibiliError as exc:
+            err_console.print(f"[red]错误[/red] {exc}")
+            return 2
         except Exception as exc:  # noqa: BLE001 - 网络层异常种类较多
             err_console.print(f"[red]错误[/red] 无法连接 bilibili：{exc}")
             return 2
@@ -378,7 +382,13 @@ def main(argv: list[str] | None = None) -> int:
         for target in args.targets:
             try:
                 handle_target(client, args, target)
-            except (ValueError, BilibiliError, DownloadError, merge.MergeError) as exc:
+            except (
+                ValueError,
+                BilibiliError,
+                DownloadError,
+                merge.MergeError,
+                httpx.HTTPError,
+            ) as exc:
                 err_console.print(f"[red]错误[/red] {target}：{exc}")
                 exit_code = 1
             except KeyboardInterrupt:

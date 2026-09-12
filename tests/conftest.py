@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,6 +59,14 @@ def server(payload):
     /norange   忽略 Range，总是整体返回
     /broken    总是 500
     /flaky     首次请求断在中途，之后正常
+    /risk412   总是 412（模拟风控拦截）
+    /risk-once 首次 412，之后正常
+    /risk-code 首次返回 code=-412，之后正常
+    /biz-error 返回业务错误 code=-404
+    /notjson   返回 200 但不是 JSON
+    /spi       模拟设备标识接口
+    /home      模拟首页，用 Set-Cookie 下发 buvid3
+    /echo      回显请求头，用于检查 Cookie 作用域
     其余路径   按 REDIRECTS 表跳转，或直接返回内容
     """
     log = ServerLog()
@@ -76,6 +85,11 @@ def server(payload):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_json(self, obj, status: int = 200):
+            self._send(
+                json.dumps(obj).encode(), status, {"Content-Type": "application/json"}
+            )
+
         def do_GET(self):
             rng = self.headers.get("Range")
             count = log.record(self.path, rng)
@@ -90,6 +104,46 @@ def server(payload):
 
             if self.path in REDIRECTS:
                 self._send(b"", 302, {"Location": REDIRECTS[self.path]})
+                return
+
+            if self.path == "/risk412":
+                self._send(b"blocked", 412)
+                return
+
+            if self.path == "/risk-once":
+                if count == 1:
+                    self._send(b"blocked", 412)
+                else:
+                    self._send_json({"code": 0, "data": {"ok": True}})
+                return
+
+            if self.path == "/risk-code":
+                if count == 1:
+                    self._send_json({"code": -412, "message": "请求被拦截"})
+                else:
+                    self._send_json({"code": 0, "data": {"ok": True}})
+                return
+
+            if self.path == "/biz-error":
+                self._send_json({"code": -404, "message": "啥都木有"})
+                return
+
+            if self.path == "/notjson":
+                self._send(b"<html>risk control page</html>")
+                return
+
+            if self.path == "/spi":
+                self._send_json(
+                    {"code": 0, "data": {"b_3": "BUVID3TEST", "b_4": "BUVID4TEST"}}
+                )
+                return
+
+            if self.path == "/home":
+                self._send(b"<html></html>", 200, {"Set-Cookie": "buvid3=FROMHOME; Path=/"})
+                return
+
+            if self.path == "/echo":
+                self._send_json({"cookie": self.headers.get("Cookie", "")})
                 return
 
             start, end = 0, len(payload) - 1

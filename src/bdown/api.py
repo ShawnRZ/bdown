@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -22,12 +23,39 @@ USER_AGENT = (
 )
 
 # CDN 会校验来路，缺了 Referer 一律 403
+# 尽量贴近 Chrome 的请求头。缺少这些头的请求更容易被判为爬虫而吃 412
 BASE_HEADERS = {
     "User-Agent": USER_AGENT,
     "Referer": "https://www.bilibili.com/",
     "Origin": "https://www.bilibili.com",
+    "Accept": "application/json, text/plain, */*",
     "Accept-Language": "zh-CN,zh;q=0.9",
+    "sec-ch-ua": '"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Linux"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
 }
+
+HOME_URL = "https://www.bilibili.com/"
+# 官方的设备标识接口，返回 b_3 / b_4 即 buvid3 / buvid4
+API_SPI = "https://api.bilibili.com/x/frontend/finger/spi"
+
+COOKIE_DOMAIN = ".bilibili.com"
+
+# 风控拦截：HTTP 412，或业务层的这几个 code
+RISK_CODES = {-412, -352}
+RETRY_ATTEMPTS = 3
+RETRY_DELAY = 2.0
+
+RISK_HINT = (
+    "请求被 bilibili 风控拦截（HTTP 412 / code=-412）。"
+    "机房与云服务器 IP 特别容易触发，可以试：\n"
+    "  1) 提供登录 Cookie（含 SESSDATA）——最有效，见 README「关于清晰度与登录」\n"
+    "  2) 降低并发并放慢节奏：-j 2\n"
+    "  3) 等几分钟再试，或换出口 IP / 挂代理（设 HTTPS_PROXY 环境变量即可生效）"
+)
 
 # fnval 位掩码：DASH(16) + HDR(64) + 4K(128) + 杜比音频(256) + 杜比视界(512) + 8K(1024) + AV1(2048)
 FNVAL_ALL = 4048
@@ -173,15 +201,28 @@ def load_cookie(explicit: str | None = None) -> str:
     return ""
 
 
+def parse_cookie_string(cookie: str) -> list[tuple[str, str]]:
+    """把浏览器里复制的 Cookie 串拆成键值对。"""
+    pairs = []
+    for item in cookie.split(";"):
+        name, sep, value = item.partition("=")
+        name, value = name.strip(), value.strip().strip('"')
+        if sep and name:
+            pairs.append((name, value))
+    return pairs
+
+
 class BilibiliClient:
     def __init__(self, cookie: str = "", timeout: float = 15.0):
-        headers = dict(BASE_HEADERS)
-        if cookie:
-            headers["Cookie"] = cookie
         self.http = httpx.Client(
-            headers=headers, timeout=timeout, follow_redirects=True
+            headers=dict(BASE_HEADERS), timeout=timeout, follow_redirects=True
         )
+        # 放进 cookie jar 而不是写死 Cookie 头：既能与接口下发的 Set-Cookie 合并，
+        # 也把作用域限制在 bilibili.com，不会把 SESSDATA 带给 CDN
+        for name, value in parse_cookie_string(cookie):
+            self.http.cookies.set(name, value, domain=COOKIE_DOMAIN)
         self._wbi_keys: tuple[str, str] | None = None
+        self._warmed = False
         self.logged_in = False
         self.vip = False
 
@@ -194,24 +235,89 @@ class BilibiliClient:
     def __exit__(self, *_exc) -> None:
         self.close()
 
-    def _get_json(self, url: str, params: dict | None = None) -> dict:
-        resp = self.http.get(url, params=params)
-        resp.raise_for_status()
-        body = resp.json()
-        code = body.get("code")
-        if code != 0:
-            hint = CODE_MESSAGES.get(code) or body.get("message") or "接口返回异常"
-            raise BilibiliError(f"{hint}（code={code}）")
-        return body.get("data") or {}
+    def warm_up(self) -> None:
+        """补齐浏览器才有的设备标识 Cookie，显著降低被风控的概率。
+
+        用户自带的 Cookie 里已有 buvid3 时不去覆盖。
+        """
+        if self._warmed:
+            return
+        self._warmed = True
+        if not self.http.cookies.get("buvid3"):
+            self.refresh_device_ids()
+        if not self.http.cookies.get("b_nut"):
+            self.http.cookies.set("b_nut", str(int(time.time())), domain=COOKIE_DOMAIN)
+
+    def refresh_device_ids(self) -> None:
+        """申领一组新的 buvid。被风控拦下后换一组再试往往就通了。"""
+        data = {}
+        try:
+            resp = self.http.get(API_SPI)
+            if resp.status_code == 200:
+                data = resp.json().get("data") or {}
+        except (httpx.HTTPError, ValueError):
+            pass
+        for name, key in (("buvid3", "b_3"), ("buvid4", "b_4")):
+            if data.get(key):
+                self.http.cookies.set(name, str(data[key]), domain=COOKIE_DOMAIN)
+        if not self.http.cookies.get("buvid3"):
+            # 退路：首页的 Set-Cookie 也会下发 buvid3 与 b_nut
+            try:
+                self.http.get(HOME_URL)
+            except httpx.HTTPError:
+                pass
+
+    def _get_json(
+        self, url: str, params: dict | None = None, ignore_code: bool = False
+    ) -> dict:
+        """请求 JSON 接口。风控与 5xx 会换设备标识后退避重试，业务错误直接抛出。"""
+        self.warm_up()
+        delay = RETRY_DELAY
+        last: BilibiliError | None = None
+
+        for attempt in range(RETRY_ATTEMPTS):
+            try:
+                resp = self.http.get(url, params=params)
+            except httpx.HTTPError as exc:
+                last = BilibiliError(f"网络请求失败：{exc}")
+            else:
+                if resp.status_code == 412:
+                    last = BilibiliError(RISK_HINT)
+                elif resp.status_code >= 500:
+                    last = BilibiliError(f"服务端错误（HTTP {resp.status_code}）")
+                elif resp.status_code >= 400:
+                    raise BilibiliError(f"请求被拒绝（HTTP {resp.status_code}）")
+                else:
+                    try:
+                        body = resp.json()
+                    except ValueError:
+                        last = BilibiliError("响应不是 JSON，可能被风控页面挡住了")
+                    else:
+                        code = body.get("code")
+                        if code in RISK_CODES:
+                            last = BilibiliError(RISK_HINT)
+                        elif code != 0 and not ignore_code:
+                            hint = (
+                                CODE_MESSAGES.get(code)
+                                or body.get("message")
+                                or "接口返回异常"
+                            )
+                            raise BilibiliError(f"{hint}（code={code}）")
+                        else:
+                            return body.get("data") or {}
+
+            if attempt < RETRY_ATTEMPTS - 1:
+                self.refresh_device_ids()
+                time.sleep(delay)
+                delay *= 2
+
+        raise last if last else BilibiliError("请求失败")
 
     def wbi_keys(self) -> tuple[str, str]:
         """nav 接口下发的签名密钥，每天轮换一次，进程内缓存。"""
         if self._wbi_keys is None:
-            # 未登录时 nav 的 code 是 -101，但 wbi_img 照样下发，所以不走 _get_json
-            resp = self.http.get(API_NAV)
-            resp.raise_for_status()
-            body = resp.json()
-            data = body.get("data") or {}
+            # 未登录时 nav 的 code 是 -101，但 wbi_img 照样下发，故容忍非 0 code
+            data = self._get_json(API_NAV, ignore_code=True)
             self.logged_in = bool(data.get("isLogin"))
             self.vip = bool(data.get("vipStatus"))
             img = data.get("wbi_img") or {}
